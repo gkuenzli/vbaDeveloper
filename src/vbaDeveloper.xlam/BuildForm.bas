@@ -196,36 +196,3 @@ Public Function getCleanFormHeader(ByVal userFormCode As String) As String
     getCleanFormHeader = Join(lns, vbCrLf)
 End Function
 
-
-''
-' Join Path with \
-'
-' @example
-' ```VB.net
-' Debug.Print JoinPath("a/", "/b")
-' Debug.Print JoinPath("a", "b")
-' Debug.Print JoinPath("a/", "b")
-' Debug.Print JoinPath("a", "/b")
-' -> a/b
-' ```
-'
-' @param {String} LeftSide
-' @param {String} RightSide
-' @return {String} Joined path
-''
-Public Function JoinPath(LeftSide As String, RightSide As String) As String
-    If Left(RightSide, 1) = "\" Then
-        RightSide = Right(RightSide, Len(RightSide) - 1)
-    End If
-    If Right(LeftSide, 1) = "\" Then
-        LeftSide = Left(LeftSide, Len(LeftSide) - 1)
-    End If
-
-    If LeftSide <> "" And RightSide <> "" Then
-        JoinPath = LeftSide & "\" & RightSide
-    Else
-        JoinPath = LeftSide & RightSide
-    End If
-End Function
-
-

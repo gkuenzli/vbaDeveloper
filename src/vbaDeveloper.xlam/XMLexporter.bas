@@ -11,9 +11,13 @@ Public Sub unpackXML(fileShortName As String)
     'This unpacks the most recently saved version of the file that is passed as an argument.
     'It's necessary for the file to be currently open; calling function should (if appropriate) ask the user if they want to save before executing so that the version on the hard drive is the most recent.
 
+    Dim wb As Workbook
+    Dim iCnf As Configuration
     Dim fileName As String, exportPath As String, exportPathXML As String
-    fileName = Workbooks(fileShortName).FullName
-    exportPath = getSourceDir(fileName, createIfNotExists:=True)
+    Set wb = Workbooks(fileShortName)
+    Build.GetConfigurationWB wb, iCnf
+    fileName = wb.FullName
+    exportPath = getSourceDir(iCnf, createIfNotExists:=True)
     exportPathXML = exportPath & XML_FOLDER_NAME
 
     Dim FSO As New Scripting.FileSystemObject

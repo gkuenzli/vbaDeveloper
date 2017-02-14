@@ -6,6 +6,7 @@ Attribute VB_Name = "Build"
 ' 2. From tools references... add
 '     * Microsoft Visual Basic for Applications Extensibility 5.3
 '     * Microsoft Scripting Runtime
+'     * Microsoft Forms 2.0 Object Library
 ' 3. Rename the project to 'vbaDeveloper'
 ' 5. Enable programatic access to VBA:
 '       File -> Options -> Trust Center, Trust Center Settings, -> Macros,
@@ -21,12 +22,37 @@ Attribute VB_Name = "Build"
 
 Option Explicit
 
+Private Const SHEET_EXPORT_EXTENSION As String = ".sheet.cls"
+Private Const MODULE_EXPORT_EXTENSION As String = ".bas"
+Private Const CLASS_EXPORT_EXTENSION As String = ".cls"
+Private Const FORM_EXPORT_EXTENSION As String = ".frm"
+
+Private Const PROJECT_NAME_PARAM As String = "%ProjectName%"
+Private Const FILE_NAME_PARAM As String = "%FileName%"
+
+Private Const DEFAULT_RELATIVE_SOURCE_PATH As String = "src\" & FILE_NAME_PARAM
+Private Const CONFIG_MODULE As String = "VbaDeveloperConfig"
+
+Public Type Configuration
+    VBProject As VBProject
+    ProjectFolder As String
+    ' Attributes found in VbaDeveloperConfiguration
+    RelativeSourcePath As String
+    ImportAfterOpen As Boolean
+    FormatBeforeSave As Boolean
+    ExportAfterSave As Boolean
+    IgnoredComponents As Collection     ' Value = ComponentNama, Key = ComponentName
+    
+    ' Data for import job
+    Components As Dictionary            ' Key = componentName, Value = componentFilePath
+    Sheets As Dictionary                ' Key = componentName, Value = File object
+End Type
+
 Private Const IMPORT_DELAY As String = "00:00:03"
 
-'We need to make these variables public such that they can be given as arguments to application.ontime()
-Public componentsToImport As Dictionary 'Key = componentName, Value = componentFilePath
-Public sheetsToImport As Dictionary 'Key = componentName, Value = File object
-Public vbaProjectToImport As VBProject
+'We need to make this variable public such that they can be given as arguments to application.ontime()
+Public ImportJob As Configuration
+
 
 Public Sub testImport()
     Dim proj_name As String
@@ -58,32 +84,21 @@ End Sub
 ' Usually called with: fullWorkbookPath = wb.FullName or fullWorkbookPath = vbProject.fileName
 ' if the workbook is new and has never been saved,
 ' vbProject.fileName will throw an error while wb.FullName will return a name without slashes.
-Public Function getSourceDir(fullWorkbookPath As String, createIfNotExists As Boolean) As String
+Public Function getSourceDir(Config As Configuration, createIfNotExists As Boolean) As String
     ' First check if the fullWorkbookPath contains a \.
-    If Not InStr(fullWorkbookPath, "\") > 0 Then
+    If InStr(Config.ProjectFolder, "\") = 0 Then
         'In this case it is a new workbook, we skip it
         Exit Function
     End If
 
-    Dim FSO As New Scripting.FileSystemObject
-    Dim projDir As String
-    projDir = FSO.GetParentFolderName(fullWorkbookPath) & "\"
-    Dim srcDir As String
-    srcDir = projDir & "src\"
+    Dim iFso As New Scripting.FileSystemObject
     Dim exportDir As String
-    exportDir = srcDir & FSO.GetFileName(fullWorkbookPath) & "\"
+    exportDir = JoinPath(Config.ProjectFolder, Config.RelativeSourcePath)
 
     If createIfNotExists Then
-        If Not FSO.FolderExists(srcDir) Then
-            FSO.CreateFolder srcDir
-            Debug.Print "Created Folder " & srcDir
-        End If
-        If Not FSO.FolderExists(exportDir) Then
-            FSO.CreateFolder exportDir
-            Debug.Print "Created Folder " & exportDir
-        End If
+        exportDir = CreateSubFolderPath(Config.ProjectFolder, Config.RelativeSourcePath)
     Else
-        If Not FSO.FolderExists(exportDir) Then
+        If Not iFso.FolderExists(exportDir) Then
             Debug.Print "Folder does not exist: " & exportDir
             exportDir = ""
         End If
@@ -91,35 +106,93 @@ Public Function getSourceDir(fullWorkbookPath As String, createIfNotExists As Bo
     getSourceDir = exportDir
 End Function
 
+''
+' If not already exist, create a complete folder sub path, starting at a root path
+'
+' @param {String} RootPath - must exist
+' @param {String} SubPath - created if necessary
+' @return {String} resulting path (if successfull)
+''
+Public Function CreateSubFolderPath(ByVal RootPath As String, ByVal SubPath As String) As String
+    Dim iFso As New Scripting.FileSystemObject
+    Dim iParts() As String
+    Dim i As Long
+    Dim s As String
+    iParts = Split(SubPath, "\")
+    s = RootPath
+    For i = LBound(iParts) To UBound(iParts)
+        s = JoinPath(s, iParts(i))
+        If Not iFso.FolderExists(s) Then
+            Debug.Print "Build.CreateSubFolderPath : creating folder " + s
+            On Error Resume Next
+            Call iFso.CreateFolder(s)
+            On Error GoTo 0
+        End If
+    Next i
+    If iFso.FolderExists(s) Then
+        CreateSubFolderPath = s
+    End If
+End Function
+
+''
+' Join Path with \
+'
+' @example
+' ```VB.net
+' Debug.Print JoinPath("a\", "\b")
+' Debug.Print JoinPath("a", "b")
+' Debug.Print JoinPath("a\", "b")
+' Debug.Print JoinPath("a", "\b")
+' -> a\b
+' ```
+'
+' @param {String} LeftSide
+' @param {String} RightSide
+' @return {String} Joined path
+''
+Public Function JoinPath(LeftSide As String, RightSide As String) As String
+    If Left(RightSide, 1) = "\" Then
+        RightSide = Right(RightSide, Len(RightSide) - 1)
+    End If
+    If Right(LeftSide, 1) = "\" Then
+        LeftSide = Left(LeftSide, Len(LeftSide) - 1)
+    End If
+
+    If LeftSide <> "" And RightSide <> "" Then
+        JoinPath = LeftSide & "\" & RightSide
+    Else
+        JoinPath = LeftSide & RightSide
+    End If
+End Function
+
+
+
 
 ' Usually called after the given workbook is saved
 Public Sub exportVbaCode(vbaProject As VBProject)
-    Dim vbProjectFileName As String
-    On Error Resume Next
-    'this can throw if the workbook has never been saved.
-    vbProjectFileName = vbaProject.fileName
-    On Error GoTo 0
-    If vbProjectFileName = "" Then
+    Dim iCnf As Configuration
+    GetConfiguration vbaProject, iCnf
+    If iCnf.ProjectFolder = "" Then
         'In this case it is a new workbook, we skip it
         Debug.Print "No file name for project " & vbaProject.name & ", skipping"
         Exit Sub
     End If
 
     Dim export_path As String
-    export_path = getSourceDir(vbProjectFileName, createIfNotExists:=True)
+    export_path = getSourceDir(iCnf, createIfNotExists:=True)
 
     Debug.Print "exporting to " & export_path
     'export all components
     Dim component As VBComponent
     For Each component In vbaProject.VBComponents
         'lblStatus.Caption = "Exporting " & proj_name & "::" & component.Name
-        If hasCodeToExport(component) Then
+        If hasCodeToExport(component) And Not IgnoreComponent(iCnf, component.name) Then
             'Debug.Print "exporting type is " & component.Type
             Select Case component.Type
                 Case vbext_ct_ClassModule
                     exportComponent export_path, component
                 Case vbext_ct_StdModule
-                    exportComponent export_path, component, ".bas"
+                    exportComponent export_path, component, MODULE_EXPORT_EXTENSION
                 Case vbext_ct_MSForm
                     BuildForm.exportMSForm export_path, component
                 Case vbext_ct_Document
@@ -144,17 +217,17 @@ End Function
 
 
 'To export everything else but sheets
-Private Sub exportComponent(exportPath As String, component As VBComponent, Optional extension As String = ".cls")
+Private Sub exportComponent(exportPath As String, component As VBComponent, Optional extension As String = CLASS_EXPORT_EXTENSION)
     Debug.Print "exporting " & component.name & extension
-    component.Export exportPath & "\" & component.name & extension
+    component.Export JoinPath(exportPath, component.name & extension)
 End Sub
 
 
 'To export sheets
 Private Sub exportLines(exportPath As String, component As VBComponent)
-    Dim extension As String: extension = ".sheet.cls"
+    Dim extension As String: extension = SHEET_EXPORT_EXTENSION
     Dim fileName As String
-    fileName = exportPath & "\" & component.name & extension
+    fileName = JoinPath(exportPath, component.name & extension)
     Debug.Print "exporting " & component.name & extension
     'component.Export exportPath & "\" & component.name & extension
     Dim FSO As New Scripting.FileSystemObject
@@ -168,45 +241,41 @@ End Sub
 ' Usually called after the given workbook is opened.
 ' The option includeClassFiles is True by default providing that git repo is correctly handling line endings as crlf (Windows-style) instead of lf (Unix-style)
 Public Sub importVbaCode(vbaProject As VBProject, Optional includeClassFiles As Boolean = True)
+    Dim iCnf As Configuration
+    GetConfiguration vbaProject, iCnf
     Dim vbProjectFileName As String
-    On Error Resume Next
-    'this can throw if the workbook has never been saved.
-    vbProjectFileName = vbaProject.fileName
-    On Error GoTo 0
-    If vbProjectFileName = "" Then
+    If iCnf.ProjectFolder = "" Then
         'In this case it is a new workbook, we skip it
         Debug.Print "No file name for project " & vbaProject.name & ", skipping"
         Exit Sub
     End If
 
-    Dim export_path As String
-    export_path = getSourceDir(vbProjectFileName, createIfNotExists:=False)
-    If export_path = "" Then
+    Dim import_path As String
+    import_path = getSourceDir(iCnf, createIfNotExists:=False)
+    If import_path = "" Then
         'The source directory does not exist, code has never been exported for this vbaProject.
         Debug.Print "No import directory for project " & vbaProject.name & ", skipping"
         Exit Sub
     End If
 
     'initialize globals for Application.OnTime
-    Set componentsToImport = New Dictionary
-    Set sheetsToImport = New Dictionary
-    Set vbaProjectToImport = vbaProject
+    ImportJob = iCnf
 
     Dim FSO As New Scripting.FileSystemObject
     Dim projContents As Folder
-    Set projContents = FSO.GetFolder(export_path)
-    Dim file As Object
+    Set projContents = FSO.GetFolder(import_path)
+    Dim file As Scripting.file
     For Each file In projContents.Files()
         'check if and how to import the file
         checkHowToImport file, includeClassFiles
     Next
 
-    Dim componentName As String
+    Dim ComponentName As String
     Dim vComponentName As Variant
     'Remove all the modules and class modules
-    For Each vComponentName In componentsToImport.Keys
-        componentName = vComponentName
-        removeComponent vbaProject, componentName
+    For Each vComponentName In ImportJob.Components.Keys
+        ComponentName = vComponentName
+        removeComponent vbaProject, ComponentName
     Next
     'Then import them
     Debug.Print "Invoking 'Build.importComponents'with Application.Ontime with delay " & IMPORT_DELAY
@@ -216,13 +285,17 @@ Public Sub importVbaCode(vbaProject As VBProject, Optional includeClassFiles As 
 End Sub
 
 
-Private Sub checkHowToImport(file As Object, includeClassFiles As Boolean)
+Private Sub checkHowToImport(file As Scripting.file, includeClassFiles As Boolean)
     Dim fileName As String
     fileName = file.name
-    Dim componentName As String
-    componentName = Left(fileName, InStr(fileName, ".") - 1)
-    If componentName = "Build" Then
+    Dim ComponentName As String
+    ComponentName = Left(fileName, InStr(fileName, ".") - 1)
+    If ComponentName = "Build" And GetFileName(ImportJob) = ThisWorkbook.name Then
         '"don't remove or import ourself
+        Exit Sub
+    End If
+    If IgnoreComponent(ImportJob, ComponentName) Then
+        ' don't import ignored component
         Exit Sub
     End If
 
@@ -230,21 +303,21 @@ Private Sub checkHowToImport(file As Object, includeClassFiles As Boolean)
         Dim lastPart As String
         lastPart = Right(fileName, 4)
         Select Case lastPart
-            Case ".cls" ' 10 == Len(".sheet.cls")
-                If Len(fileName) > 10 And Right(fileName, 10) = ".sheet.cls" Then
-                    'import lines into sheet: importLines vbaProjectToImport, file
-                    sheetsToImport.Add componentName, file
+            Case CLASS_EXPORT_EXTENSION ' 10 == Len(".sheet.cls")
+                If Len(fileName) > 10 And LCase(Right(fileName, 10)) = SHEET_EXPORT_EXTENSION Then
+                    'import lines into sheet: importLines ImportJob.VBProject, file
+                    ImportJob.Sheets.Add ComponentName, file
                 Else
                     ' .cls files don't import correctly because of a bug in excel, therefore we can exclude them.
                     ' In that case they'll have to be imported manually.
                     If includeClassFiles Then
                         'importComponent vbaProject, file
-                        componentsToImport.Add componentName, file.Path
+                        ImportJob.Components.Add ComponentName, file.Path
                     End If
                 End If
-            Case ".bas", ".frm"
+            Case MODULE_EXPORT_EXTENSION, FORM_EXPORT_EXTENSION
                 'importComponent vbaProject, file
-                componentsToImport.Add componentName, file.Path
+                ImportJob.Components.Add ComponentName, file.Path
             Case Else
                 'do nothing
                 Debug.Print "Skipping file " & fileName
@@ -254,10 +327,10 @@ End Sub
 
 
 ' Only removes the vba component if it exists
-Private Sub removeComponent(vbaProject As VBProject, componentName As String)
-    If componentExists(vbaProject, componentName) Then
+Private Sub removeComponent(vbaProject As VBProject, ComponentName As String)
+    If componentExists(vbaProject, ComponentName) Then
         Dim c As VBComponent
-        Set c = vbaProject.VBComponents(componentName)
+        Set c = vbaProject.VBComponents(ComponentName)
         Debug.Print "removing " & c.name
         vbaProject.VBComponents.Remove c
     End If
@@ -265,27 +338,30 @@ End Sub
 
 
 Public Sub importComponents()
-    If componentsToImport Is Nothing Then
-        Debug.Print "Failed to import! Dictionary 'componentsToImport' was not initialized."
+    If ImportJob.Components Is Nothing Then
+        Debug.Print "Failed to import! Dictionary 'ImportJob.Components' was not initialized."
         Exit Sub
     End If
-    Dim componentName As String
+    Dim ComponentName As String
     Dim vComponentName As Variant
-    For Each vComponentName In componentsToImport.Keys
-        componentName = vComponentName
-        importComponent vbaProjectToImport, componentsToImport(componentName)
+    For Each vComponentName In ImportJob.Components.Keys
+        ComponentName = vComponentName
+        importComponent ImportJob.VBProject, ImportJob.Components(ComponentName)
     Next
 
     'Import the sheets
-    For Each vComponentName In sheetsToImport.Keys
-        componentName = vComponentName
-        importLines vbaProjectToImport, sheetsToImport(componentName)
+    For Each vComponentName In ImportJob.Sheets.Keys
+        ComponentName = vComponentName
+        importLines ImportJob.VBProject, ImportJob.Sheets(ComponentName)
     Next
 
-    Debug.Print "Finished importing code for " & vbaProjectToImport.name
+    Debug.Print "Finished importing code for " & ImportJob.VBProject.name
     'We're done, clear globals explicitly to free memory.
-    Set componentsToImport = Nothing
-    Set vbaProjectToImport = Nothing
+    Dim iCnf As Configuration
+    ImportJob = iCnf
+'    Set ImportJob.Components = Nothing
+'    Set ImportJob.VBProject = Nothing
+'    Set ImportJob.Sheets = Nothing
 End Sub
 
 
@@ -301,19 +377,19 @@ End Sub
 
 
 Private Sub importLines(vbaProject As VBProject, file As Object)
-    Dim componentName As String
-    componentName = Left(file.name, InStr(file.name, ".") - 1)
+    Dim ComponentName As String
+    ComponentName = Left(file.name, InStr(file.name, ".") - 1)
     Dim c As VBComponent
-    If Not componentExists(vbaProject, componentName) Then
+    If Not componentExists(vbaProject, ComponentName) Then
         ' Create a sheet to import this code into. We cannot set the ws.codeName property which is read-only,
         ' instead we set its vbComponent.name which leads to the same result.
         Dim addedSheetCodeName As String
-        addedSheetCodeName = addSheetToWorkbook(componentName, vbaProject.fileName)
+        addedSheetCodeName = addSheetToWorkbook(ComponentName, vbaProject.fileName)
         Set c = vbaProject.VBComponents(addedSheetCodeName)
-        c.name = componentName
+        c.name = ComponentName
     End If
-    Set c = vbaProject.VBComponents(componentName)
-    Debug.Print "Importing lines from " & componentName & " into component " & c.name
+    Set c = vbaProject.VBComponents(ComponentName)
+    Debug.Print "Importing lines from " & ComponentName & " into component " & c.name
 
     ' At this point compilation errors may cause a crash, so we ignore those.
     On Error Resume Next
@@ -369,3 +445,172 @@ Public Function addSheetToWorkbook(sheetName As String, workbookFilePath As Stri
     End If
 End Function
 
+
+
+' ============================================= '
+' Configuration Management
+' ============================================= '
+
+' Implemtation details
+' --------------------
+' Normally we would go for a Configuration Class, not a Type
+' However, the very nature of this project is to export/import components
+' and with a particularity to rebuild itself from this Build.bas module alone.
+'
+' So we have no other option than the good old procedural way. So be it !
+
+
+
+''
+' Prepare a Configuration for a given VBProject
+'
+' @method GetConfiguration
+' @param {VBProject} Project
+' @param out {Configuration} Config
+''
+Public Sub GetConfiguration(ByVal project As VBProject, ByRef Config As Configuration)
+    Set Config.VBProject = project
+    Dim iPath As String
+    'this can throw if the workbook has never been saved.
+    On Error Resume Next
+    iPath = project.fileName
+    On Error GoTo 0
+    GetConfigurationForPath iPath, Config
+End Sub
+
+Public Sub GetConfigurationWB(ByVal Workbook As Workbook, ByRef Config As Configuration)
+    Set Config.VBProject = Workbook.VBProject
+    GetConfigurationForPath Workbook.FullName, Config
+End Sub
+
+Private Sub GetConfigurationForPath(ByVal ProjectFileName, ByRef Config As Configuration)
+    With Config
+        Dim iFso As New Scripting.FileSystemObject
+        .ProjectFolder = iFso.GetParentFolderName(ProjectFileName)
+        Dim iPath As String
+        iPath = ReplaceParams(Config, DEFAULT_RELATIVE_SOURCE_PATH)
+        .RelativeSourcePath = iPath
+        .ImportAfterOpen = True
+        .FormatBeforeSave = True
+        .ExportAfterSave = True
+        Set .IgnoredComponents = New Collection
+        Set .Components = New Dictionary
+        Set .Sheets = New Dictionary
+    End With
+    ExtractAttributes Config
+End Sub
+
+
+' --------------------------------------------- '
+' Private Functions
+' --------------------------------------------- '
+
+Private Function GetConfigModule(Config As Configuration) As codeModule
+    On Error Resume Next
+    Set GetConfigModule = Config.VBProject.VBComponents(CONFIG_MODULE).codeModule
+End Function
+
+Private Function GetProjectName(Config As Configuration) As String
+    If Not Config.VBProject Is Nothing Then
+        GetProjectName = Config.VBProject.name
+    End If
+End Function
+
+Private Function GetFileName(Config As Configuration) As String
+    If Not Config.VBProject Is Nothing Then
+        Dim iFso As New FileSystemObject
+        GetFileName = iFso.GetFileName(Config.VBProject.fileName)
+    End If
+End Function
+
+Private Sub ExtractAttributes(ByRef Config As Configuration)
+    Dim src As codeModule
+    Set src = GetConfigModule(Config)
+    If Not src Is Nothing Then
+        ParseModule Config, src
+    End If
+End Sub
+
+Private Function IgnoreComponent(ByRef Config As Configuration, ByVal ComponentName As String) As Boolean
+    Dim s As String
+    On Error Resume Next
+    s = Config.IgnoredComponents(LCase(ComponentName))
+    IgnoreComponent = (s <> "")
+End Function
+
+Private Sub ParseModule(ByRef Config As Configuration, ByVal SourceCode As codeModule)
+    Dim i As Long
+    For i = 1 To SourceCode.CountOfLines
+        ParseLine Config, i, SourceCode.lines(i, 1)
+    Next i
+End Sub
+
+Private Sub ParseLine(ByRef Config As Configuration, ByVal Index As Long, ByVal line As String)
+    line = Trim(line)
+    
+    ' Code line must start with as comment mark
+    If Left(line, 1) <> "'" Then
+        Exit Sub
+    End If
+    line = Trim(Mid(line, 2))
+    
+    ' Line must contain a "=" after first char
+    Dim iPos As Long
+    iPos = InStr(line, "=")
+    If iPos < 2 Then
+        Exit Sub
+    End If
+    
+    Dim iName As String
+    Dim iVal As String
+    iName = Trim(Left(line, iPos - 1))
+    iVal = Trim(Mid(line, iPos + 1))
+    
+    ' Value may be surrounded by quotation marks
+    If Left(iVal, 1) = """" Then
+        If Right(iVal, 1) <> """" Or Len(iVal) = 1 Then
+            Debug.Print "VbaDeveloperConfig @ line #" & Index & " :  has invalid value format, closing quotation mark expected"
+            Exit Sub
+        End If
+        iVal = Mid(iVal, 2, Len(iVal) - 2)
+    End If
+    
+    ' Resolve params
+    iVal = ReplaceParams(Config, iVal)
+    
+    ' Assign value to attribute
+    With Config
+        Select Case LCase(iName)
+            Case "exportaftersave"
+                .ExportAfterSave = GetBool(Index, iVal)
+            Case "formatbeforesave"
+                .FormatBeforeSave = GetBool(Index, iVal)
+            Case "importafteropen"
+                .ImportAfterOpen = GetBool(Index, iVal)
+            Case "relativesourcepath"
+                .RelativeSourcePath = iVal
+            Case "ignore"
+                AddIgnoredComponent Config, iVal
+            Case Else
+                Debug.Print "VbaDeveloperConfig @ line #" & Index & " : unknown attribute name """ & iName & """"
+        End Select
+    End With
+End Sub
+
+Private Function ReplaceParams(ByRef Config As Configuration, ByVal text As String) As String
+    ReplaceParams = Replace(text, PROJECT_NAME_PARAM, GetProjectName(Config), , , vbTextCompare)
+    ReplaceParams = Replace(ReplaceParams, FILE_NAME_PARAM, GetFileName(Config), , , vbTextCompare)
+End Function
+
+Private Sub AddIgnoredComponent(ByRef Config As Configuration, ByVal ComponentName As String)
+    On Error Resume Next
+    Config.IgnoredComponents.Add ComponentName, LCase(ComponentName)
+End Sub
+
+Private Function GetBool(ByVal Index As Long, ByVal text As String) As Boolean
+    On Error GoTo GetBool_Err
+    GetBool = CBool(text)
+    Exit Function
+GetBool_Err:
+    Debug.Print "VbaDeveloperConfig @ line #" & Index & " : invalid value, boolean expected """ & text & """"
+End Function

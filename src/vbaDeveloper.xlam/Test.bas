@@ -1,5 +1,4 @@
 Attribute VB_Name = "Test"
-
 Option Explicit
 
 Private Type myOwn

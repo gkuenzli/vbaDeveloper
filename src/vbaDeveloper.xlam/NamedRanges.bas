@@ -13,8 +13,10 @@ End Enum
 ' Import named ranges from csv file
 ' Existing ranges with the same identifier will be replaced.
 Public Sub importNamedRanges(wb As Workbook)
+    Dim iCnf As Configuration
+    Build.GetConfigurationWB wb, iCnf
     Dim importDir As String
-    importDir = Build.getSourceDir(wb.FullName, createIfNotExists:=False)
+    importDir = Build.getSourceDir(iCnf, createIfNotExists:=False)
     If importDir = "" Then
         Debug.Print "No import directory for workbook " & wb.name & ", skipping"
         Exit Sub
@@ -52,8 +54,10 @@ End Sub
 
 'Export named ranges to csv file
 Public Sub exportNamedRanges(wb As Workbook)
+    Dim iCnf As Configuration
+    Build.GetConfigurationWB wb, iCnf
     Dim exportDir As String
-    exportDir = Build.getSourceDir(wb.FullName, createIfNotExists:=True)
+    exportDir = Build.getSourceDir(iCnf, createIfNotExists:=True)
     Dim fileName As String
     fileName = exportDir & NAMED_RANGES_FILE_NAME
 

@@ -23,15 +23,20 @@ End Sub
 
 
 Private Sub App_WorkbookAfterSave(ByVal wb As Workbook, ByVal success As Boolean)
+    Dim iCnf As Configuration
+    Build.GetConfiguration wb.VBProject, iCnf
+    
     On Error GoTo App_WorkbookAfterSave_Error
 
     'Export all the modules for this work book if save was successful
-    If success Then
-        Build.exportVbaCode wb.VBProject
-        NamedRanges.exportNamedRanges wb
-        MsgBox "Finished saving workbook: " & wb.name & " . Code is exported."
-    Else
-        MsgBox "Saving workbook: " & wb.name & " was not successful. Code is not exported."
+    If iCnf.ExportAfterSave Then
+        If success Then
+            Build.exportVbaCode wb.VBProject
+            NamedRanges.exportNamedRanges wb
+            MsgBox "Finished saving workbook: " & wb.name & " . Code is exported."
+        Else
+            MsgBox "Saving workbook: " & wb.name & " was not successful. Code is not exported."
+        End If
     End If
 
     Exit Sub
@@ -41,23 +46,28 @@ End Sub
 
 
 Private Sub App_WorkbookBeforeSave(ByVal wb As Workbook, ByVal SaveAsUI As Boolean, Cancel As Boolean)
-    If Not Cancel Then
+    Dim iCnf As Configuration
+    Build.GetConfiguration wb.VBProject, iCnf
+    If Not Cancel And iCnf.FormatBeforeSave Then
         Formatter.formatProject wb.VBProject
     End If
 End Sub
 
 
 Private Sub App_WorkbookOpen(ByVal wb As Workbook)
+    Dim iCnf As Configuration
+    Build.GetConfiguration wb.VBProject, iCnf
     On Error GoTo App_WorkbookOpen_Error
 
     'Import all the modules for this workbook
-    Dim importNow As Integer
-    importNow = MsgBox("Import the code for " & wb.name & " now?", vbYesNo, "EventListener Workbook open event")
-    If importNow = vbYes Then
-        Build.importVbaCode wb.VBProject
-        NamedRanges.importNamedRanges wb
+    If iCnf.ImportAfterOpen Then
+        Dim importNow As Integer
+        importNow = MsgBox("Import the code for " & wb.name & " now?", vbYesNo, "EventListener Workbook open event")
+        If importNow = vbYes Then
+            Build.importVbaCode wb.VBProject
+            NamedRanges.importNamedRanges wb
+        End If
     End If
-
 
     Exit Sub
 App_WorkbookOpen_Error:
@@ -68,4 +78,3 @@ End Sub
 Private Sub Class_Terminate()
     Set App = Nothing
 End Sub
-
