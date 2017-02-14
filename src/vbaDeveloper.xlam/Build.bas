@@ -36,13 +36,15 @@ Private Const CONFIG_MODULE As String = "VbaDeveloperConfig"
 Public Type Configuration
     VBProject As VBProject
     ProjectFolder As String
+    ProjectFileName As String
+
     ' Attributes found in VbaDeveloperConfiguration
     RelativeSourcePath As String
     ImportAfterOpen As Boolean
     FormatBeforeSave As Boolean
     ExportAfterSave As Boolean
     IgnoredComponents As Collection     ' Value = ComponentNama, Key = ComponentName
-    
+
     ' Data for import job
     Components As Dictionary            ' Key = componentName, Value = componentFilePath
     Sheets As Dictionary                ' Key = componentName, Value = File object
@@ -50,7 +52,7 @@ End Type
 
 Private Const IMPORT_DELAY As String = "00:00:03"
 
-'We need to make this variable public such that they can be given as arguments to application.ontime()
+'We need to make this variable public so that it can be accessed when application.ontime() triggers importComponents
 Public ImportJob As Configuration
 
 
@@ -290,8 +292,8 @@ Private Sub checkHowToImport(file As Scripting.file, includeClassFiles As Boolea
     fileName = file.name
     Dim ComponentName As String
     ComponentName = Left(fileName, InStr(fileName, ".") - 1)
-    If ComponentName = "Build" And GetFileName(ImportJob) = ThisWorkbook.name Then
-        '"don't remove or import ourself
+    If ComponentName = "Build" And ImportJob.ProjectFileName = ThisWorkbook.name Then
+        ' don't remove or import ourself
         Exit Sub
     End If
     If IgnoreComponent(ImportJob, ComponentName) Then
@@ -359,9 +361,6 @@ Public Sub importComponents()
     'We're done, clear globals explicitly to free memory.
     Dim iCnf As Configuration
     ImportJob = iCnf
-'    Set ImportJob.Components = Nothing
-'    Set ImportJob.VBProject = Nothing
-'    Set ImportJob.Sheets = Nothing
 End Sub
 
 
@@ -483,10 +482,11 @@ Public Sub GetConfigurationWB(ByVal Workbook As Workbook, ByRef Config As Config
     GetConfigurationForPath Workbook.FullName, Config
 End Sub
 
-Private Sub GetConfigurationForPath(ByVal ProjectFileName, ByRef Config As Configuration)
+Private Sub GetConfigurationForPath(ByVal ProjectFullPath, ByRef Config As Configuration)
     With Config
         Dim iFso As New Scripting.FileSystemObject
-        .ProjectFolder = iFso.GetParentFolderName(ProjectFileName)
+        .ProjectFolder = iFso.GetParentFolderName(ProjectFullPath)
+        .ProjectFileName = iFso.GetFileName(ProjectFullPath)
         Dim iPath As String
         iPath = ReplaceParams(Config, DEFAULT_RELATIVE_SOURCE_PATH)
         .RelativeSourcePath = iPath
@@ -547,25 +547,25 @@ End Sub
 
 Private Sub ParseLine(ByRef Config As Configuration, ByVal Index As Long, ByVal line As String)
     line = Trim(line)
-    
+
     ' Code line must start with as comment mark
     If Left(line, 1) <> "'" Then
         Exit Sub
     End If
     line = Trim(Mid(line, 2))
-    
+
     ' Line must contain a "=" after first char
     Dim iPos As Long
     iPos = InStr(line, "=")
     If iPos < 2 Then
         Exit Sub
     End If
-    
+
     Dim iName As String
     Dim iVal As String
     iName = Trim(Left(line, iPos - 1))
     iVal = Trim(Mid(line, iPos + 1))
-    
+
     ' Value may be surrounded by quotation marks
     If Left(iVal, 1) = """" Then
         If Right(iVal, 1) <> """" Or Len(iVal) = 1 Then
@@ -574,10 +574,10 @@ Private Sub ParseLine(ByRef Config As Configuration, ByVal Index As Long, ByVal 
         End If
         iVal = Mid(iVal, 2, Len(iVal) - 2)
     End If
-    
+
     ' Resolve params
     iVal = ReplaceParams(Config, iVal)
-    
+
     ' Assign value to attribute
     With Config
         Select Case LCase(iName)
